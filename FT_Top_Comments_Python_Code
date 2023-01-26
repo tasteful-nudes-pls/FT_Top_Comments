@@ -1,0 +1,119 @@
+#Import libraries
+import pandas as pd
+import re
+import warnings
+warnings.filterwarnings("ignore")
+
+import praw
+from praw.models import MoreComments
+
+from pathlib import Path 
+import urllib.request
+from urllib.parse import urlparse
+import requests
+from bs4 import BeautifulSoup
+
+# First you have to create an app under Developer Applications (https://www.reddit.com/prefs/apps), then can fill in info below for your app
+# Read only instance
+reddit_read_only = praw.Reddit(client_id="",         # your client id
+                               client_secret="",      # your client secret
+                               user_agent="")        # your user agent
+ 
+# Authorized instance (if you want to use this one instead)
+#reddit_authorized = praw.Reddit(client_id="",         # your client id
+#                                client_secret="",      # your client secret
+#                                user_agent="",        # your user agent
+#                                username="",        # your reddit username
+#                                password="") 
+
+#Create a dictionary to save all post info
+posts_dict = {"Post_URL": [], "Title": []
+              }
+
+#Create a month list to iterate through
+month_list = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September',
+              'October', 'November', 'December']
+
+#Iterate through each month and search Subreddit for posts that meet search criteria of 'month' and year (2022)
+for month in month_list:
+    for submission in reddit_read_only.subreddit("BarstoolSports").search(month, "2022"):
+        posts_dict["Post_URL"].append(submission.url)
+        posts_dict["Title"].append(submission.title)
+        #print(submission.title)
+        #print(submission.url)
+
+    # Saving the data in a pandas dataframe
+    top_posts = pd.DataFrame(posts_dict)
+ 
+    #Do some cleanup on the names since we get a lot of posts we don't want
+    top_posts2 = top_posts[top_posts['Post_URL'].str.contains("reddit.com")]
+    #top_posts2 = top_posts[top_posts['Post_URL'].str.contains("free_talk_t")]
+    top_posts2 = top_posts2[~top_posts2['Title'].str.contains("Barstool Radio")]
+    top_posts2 = top_posts2[~top_posts2['Title'].str.contains("Rundown")]
+    top_posts2 = top_posts2[~top_posts2['Title'].str.contains("Video Game")]
+    top_posts2 = top_posts2[~top_posts2['Title'].str.contains("Podcast")]
+    top_posts2 = top_posts2[top_posts2['Title'].str.contains("Free Talk")]
+    top_posts2 = top_posts2[top_posts2['Title'].str.contains("2022")]
+    
+#Keep a dataframe running that gets all top comments
+top_df2 = pd.DataFrame(columns = ['Comment', 'Author', 'Score', 'Time', 'Title'])
+
+#Parse the URL and get the top 2 comments from each post in case the top 1 is pinned or is deleted
+col_list = top_posts2['Post_URL'].tolist()
+
+#Set a counter so we can tally up each as it's running to see progress below
+t = 0
+
+for i in col_list:
+    title = str(i)
+    comments_df = pd.DataFrame(columns = ['Comment', 'Author', 'Score', 'Time', 'Title'])
+    url = i
+    _, listing = reddit_read_only.get(urlparse(url).path, params=dict(sort='top', limit=2))
+    comment1 = listing.children[1]
+    comment0 = listing.children[0]
+    #print(comment0.score, comment0.body)
+    if type(comment0) == MoreComments:  #or type(comment1) == MoreComments:
+        pass
+    else:
+        if comment0.stickied == True or comment0.body == '[deleted]': 
+            #May need to take out comment0.body == '[deleted]' part if you run into 'MoreComments' error
+            comments_df = comments_df.append({'Comment' : comment1.body, 'Author' : comment1.author,
+                                'Score' : comment1.score, 'Time' : comment1.created_utc,
+                                'Title' : title},
+                                ignore_index = True)
+        else:
+            comments_df = comments_df.append({'Comment' : comment0.body, 'Author' : comment0.author,
+                                'Score' : comment0.score, 'Time' : comment0.created_utc,
+                                'Title' : title},
+                                ignore_index = True)
+            
+    #Count to see your progress and only print multiples of 10 (10th done, 20th done, 30th done, etc.)
+    t += 1
+    if t % 10 == 0:
+        print(t)
+    else:
+        pass
+    #Append results to already built df
+    top_df2 = top_df2.append(comments_df)
+
+print('Done!')
+
+#Update date format and sort (if you want to view results so far)
+top_df2["Time"] = pd.to_datetime(top_df2["Time"], unit = 's', 
+                                           utc=True).dt.tz_convert('US/Mountain')
+
+top_df2["Time"] = pd.to_datetime(top_df2["Time"]).dt.date
+
+top_df2 = top_df2.sort_values(by="Time", ascending=False)
+#top_df2
+
+#Drop duplicates (if any, there likely shouldn't be any)
+top_df3 = top_df2.drop_duplicates()
+
+#Join the comments table and the post titles table
+top_df4 = top_df3.set_index('Title').join(top_posts2.set_index('Post_URL'))
+
+#Export as .csv and into spreadsheet 
+filepath = Path('FT_extracts\out_FT_ver2.csv') 
+filepath.parent.mkdir(parents=True, exist_ok=True)  
+top_df4.to_csv(filepath)
